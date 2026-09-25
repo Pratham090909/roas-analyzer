@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ledger — Real ROAS Analyzer</title>
+<style>
+:root{
+  --ink:#14181f; --surface:#1c222c; --line:#2c3340;
+  --paper:#e8e6df; --paper-dim:#9aa1ac;
+  --gold:#d4a24c; --green:#4f9d69; --red:#c85c4b;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{height:100%}
+body{
+  margin:0; background:var(--ink); color:var(--paper);
+  font-family:Georgia,'Iowan Old Style','Times New Roman',serif;
+  line-height:1.5;
+}
+.wrap{max-width:760px;margin:0 auto;padding:40px 24px 80px}
+h1{
+  font-size:clamp(28px,5vw,40px); font-weight:600; margin:0 0 6px;
+  letter-spacing:-0.01em;
+}
+.sub{color:var(--paper-dim); font-size:15px; margin:0 0 36px; max-width:60ch}
+.card{
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:4px; padding:24px; margin-bottom:20px;
+}
+label{display:block; font-size:13px; color:var(--paper-dim); margin-bottom:8px; font-family:Helvetica,Arial,sans-serif}
+textarea{
+  width:100%; min-height:130px; background:var(--ink); color:var(--paper);
+  border:1px solid var(--line); border-radius:3px; padding:12px;
+  font-family:'Courier New',Courier,monospace; font-size:13px; resize:vertical;
+}
+textarea::placeholder{color:#5a6270}
+.row{display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; margin-top:16px}
+.field{flex:1; min-width:140px}
+input[type=number]{
+  width:100%; background:var(--ink); color:var(--paper); border:1px solid var(--line);
+  border-radius:3px; padding:10px 12px; font-size:15px; font-family:inherit;
+}
+input[type=file]{color:var(--paper-dim); font-family:Helvetica,Arial,sans-serif; font-size:13px}
+button{
+  background:var(--gold); color:#1a1406; border:none; border-radius:3px;
+  padding:12px 22px; font-size:15px; font-weight:600; cursor:pointer;
+  font-family:Helvetica,Arial,sans-serif;
+}
+button:hover{filter:brightness(1.08)}
+.err{color:var(--red); font-size:13px; margin-top:10px; font-family:Helvetica,Arial,sans-serif}
+.results{margin-top:8px}
+table{width:100%; border-collapse:collapse; font-size:14px}
+th,td{padding:10px 8px; text-align:left; border-bottom:1px solid var(--line)}
+th{font-family:Helvetica,Arial,sans-serif; font-weight:600; font-size:12px; color:var(--paper-dim)}
+td.num{text-align:right; font-family:'Courier New',Courier,monospace}
+.verdict{
+  display:inline-block; padding:3px 10px; border-radius:12px; font-size:11px;
+  font-family:Helvetica,Arial,sans-serif; font-weight:700;
+}
+.scale{background:rgba(79,157,105,.18); color:var(--green)}
+.kill{background:rgba(200,92,75,.18); color:var(--red)}
+.watch{background:rgba(212,162,76,.18); color:var(--gold)}
+.headline{font-size:15px; color:var(--paper-dim); margin:22px 0 4px; font-family:Helvetica,Arial,sans-serif}
+.big{font-size:15px; margin-bottom:18px}
+.big b{color:var(--gold)}
+.note{font-size:12.5px; color:var(--paper-dim); margin-top:24px; font-family:Helvetica,Arial,sans-serif}
+.hint{font-size:11.5px; color:var(--paper-dim); margin-top:6px; font-family:Helvetica,Arial,sans-serif; line-height:1.3}
+.tmpl{margin-top:14px; font-size:13px; font-family:Helvetica,Arial,sans-serif}
+.tmpl a{color:var(--gold); text-decoration:none; border-bottom:1px dotted var(--gold)}
+.tmpl a:hover{opacity:.8}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>What's your real ROAS?</h1>
+  <p class="sub">Paste your ad spend + order data below. Platform-reported ROAS ignores margin, overlap and returns — this doesn't.</p>
+
+  <div class="card">
+    <label>CSV data — columns: date, channel, spend, revenue (header row optional)</label>
+    <textarea id="csv" placeholder="date,channel,spend,revenue
+2026-08-01,Meta,4200,11800
+2026-08-01,Google,3100,9700
+2026-08-02,Meta,4500,10200"></textarea>
+    <div class="row">
+      <div class="field">
+        <label>Or upload a file</label>
+        <input type="file" id="file" accept=".csv,text/csv">
+      </div>
+      <div class="field">
+        <label>Gross margin % (before ad spend)</label>
+        <input type="number" id="margin" value="45" min="1" max="99">
+        <div class="hint">e.g. if it costs ₹550 to make/ship a ₹1,000 product, margin is 45%</div>
+      </div>
+      <button onclick="analyze()">Analyze</button>
+    </div>
+    <div class="err" id="err"></div>
+    <div class="tmpl"><a href="#" onclick="downloadTemplate();return false;">Download a sample CSV template ↓</a></div>
+  </div>
+
+  <div class="results" id="results"></div>
+
+  <p class="note">Verdicts: <b>Scale</b> = profitable after margin, spend more. <b>Kill</b> = losing money after margin, even if "ROAS" looks fine. <b>Watch</b> = roughly breakeven.</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+$('file').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if(!f) return;
+  const r = new FileReader();
+  r.onload = () => { $('csv').value = r.result; };
+  r.readAsText(f);
+});
+
+function splitCSVLine(line){
+  const out = []; let cur = ''; let inQ = false;
+  for(let i=0;i<line.length;i++){
+    const ch = line[i];
+    if(ch === '"'){ inQ = !inQ; continue; }
+    if(ch === ',' && !inQ){ out.push(cur); cur=''; } else cur += ch;
+  }
+  out.push(cur);
+  return out.map(s=>s.trim());
+}
+
+function cleanNum(s){
+  if(s == null) return NaN;
+  return parseFloat(String(s).replace(/[^0-9.\-]/g,''));
+}
+
+function findCol(header, keys){
+  for(const k of keys){
+    const idx = header.findIndex(h => h.includes(k));
+    if(idx !== -1) return idx;
+  }
+  return -1;
+}
+
+function parseCSV(text){
+  const lines = text.trim().split(/\r?\n/).filter(l=>l.trim());
+  if(!lines.length) return {rows:[], error:'No data found — paste or upload some rows first.'};
+
+  const rawRows = lines.map(splitCSVLine);
+  const header = rawRows[0].map(h => h.toLowerCase());
+
+  const channelIdx = findCol(header, ['channel','source','campaign','platform','ad set','medium']);
+  const spendIdx   = findCol(header, ['spend','cost','amount spent','ad spend','media cost']);
+  const revenueIdx = findCol(header, ['revenue','sales','conversion value','purchase revenue','order value']);
+
+  let dataRows, cIdx, sIdx, rIdx;
+  const hasNamedHeader = channelIdx !== -1 || spendIdx !== -1 || revenueIdx !== -1;
+
+  if(hasNamedHeader){
+    if(channelIdx === -1 || spendIdx === -1 || revenueIdx === -1){
+      return {rows:[], error:`Found a header row but couldn't identify all three columns (channel, spend, revenue). Headers seen: "${rawRows[0].join('", "')}"`};
+    }
+    dataRows = rawRows.slice(1);
+    cIdx = channelIdx; sIdx = spendIdx; rIdx = revenueIdx;
+  } else {
+    // No recognizable header — assume date,channel,spend,revenue order
+    dataRows = rawRows;
+    cIdx = 1; sIdx = 2; rIdx = 3;
+  }
+
+  const rows = dataRows
+    .map(r => ({
+      channel: (r[cIdx] || '').trim() || 'Unknown',
+      spend: cleanNum(r[sIdx]),
+      revenue: cleanNum(r[rIdx])
+    }))
+    .filter(r => !isNaN(r.spend) && !isNaN(r.revenue));
+
+  if(!rows.length){
+    return {rows:[], error:'Columns were found but no valid numeric spend/revenue values could be read. Check for stray text, extra header rows, or empty cells.'};
+  }
+  return {rows, error:null};
+}
+
+function downloadTemplate(){
+  const sample = 'date,channel,spend,revenue\n2026-08-01,Meta,4200,11800\n2026-08-01,Google,3100,9700\n2026-08-01,Influencer,1500,3200\n';
+  const blob = new Blob([sample], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'sample-ad-data.csv';
+  a.click();
+}
+
+function analyze(){
+  $('err').textContent = '';
+  $('results').innerHTML = '';
+  const margin = parseFloat($('margin').value) / 100;
+  const {rows, error} = parseCSV($('csv').value);
+
+  if(error){
+    $('err').textContent = error;
+    return;
+  }
+
+  const byChannel = {};
+  rows.forEach(r => {
+    if(!byChannel[r.channel]) byChannel[r.channel] = {spend:0, revenue:0};
+    byChannel[r.channel].spend += r.spend;
+    byChannel[r.channel].revenue += r.revenue;
+  });
+
+  let totalSpend=0, totalProfit=0, worstLoss=null, bestScale=null;
+  const channelRows = Object.entries(byChannel).map(([channel, d]) => {
+    const grossProfit = d.revenue * margin;
+    const netProfit = grossProfit - d.spend;
+    const platformRoas = d.revenue / d.spend;
+    const trueRoas = netProfit / d.spend; // profit-adjusted return per rupee spent
+    totalSpend += d.spend;
+    totalProfit += netProfit;
+    let verdict = 'watch', cls = 'watch';
+    if(trueRoas > 0.15){ verdict = 'Scale'; cls='scale'; }
+    else if(trueRoas < -0.05){ verdict = 'Kill'; cls='kill'; }
+    else { verdict = 'Watch'; cls='watch'; }
+    if(netProfit < 0 && (worstLoss===null || netProfit < worstLoss.netProfit)) worstLoss = {channel, netProfit};
+    if(netProfit > 0 && (bestScale===null || netProfit > bestScale.netProfit)) bestScale = {channel, netProfit};
+    return {channel, spend:d.spend, revenue:d.revenue, platformRoas, netProfit, verdict, cls};
+  }).sort((a,b)=>b.netProfit-a.netProfit);
+
+  let headline = '';
+  if(worstLoss){
+    headline += `<div class="big">Losing <b>₹${Math.abs(worstLoss.netProfit).toFixed(0)}</b> in true profit on <b>${worstLoss.channel}</b> — the platform's own ROAS number won't show you this.</div>`;
+  }
+  if(bestScale){
+    headline += `<div class="big"><b>${bestScale.channel}</b> is generating <b>₹${bestScale.netProfit.toFixed(0)}</b> real profit — most founders under-invest here because the platform ROAS looks "average."</div>`;
+  }
+
+  let html = `<div class="headline">Net verdict</div>${headline}`;
+  html += `<table><thead><tr><th>Channel</th><th class="num">Spend</th><th class="num">Revenue</th><th class="num">Platform ROAS</th><th class="num">True profit</th><th>Verdict</th></tr></thead><tbody>`;
+  channelRows.forEach(c => {
+    html += `<tr>
+      <td>${c.channel}</td>
+      <td class="num">₹${c.spend.toFixed(0)}</td>
+      <td class="num">₹${c.revenue.toFixed(0)}</td>
+      <td class="num">${c.platformRoas.toFixed(2)}x</td>
+      <td class="num">${c.netProfit>=0?'':'-'}₹${Math.abs(c.netProfit).toFixed(0)}</td>
+      <td><span class="verdict ${c.cls}">${c.verdict}</span></td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  $('results').innerHTML = html;
+}
+</script>
+</body>
+</html>
